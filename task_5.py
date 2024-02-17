@@ -137,9 +137,8 @@ async def perform_operation(identifier: str) -> ApplicationResponse:
         if result_app1 == Response.RetryAfter and result_app2 == Response.RetryAfter:
             results, timeout_expired = await _get_status_with_timeout(app_1_id=f'identifier_1', app_2_id=f'identifier_2')
             result_app1, result_app2 = results[0], results[0]
-
-        if timeout_expired:
-            break
+            if timeout_expired:
+                break
 
         if result_app1 == Response.RetryAfter:
             results, timeout_expired = await _get_status_with_timeout(app_1_id=f'identifier_1')

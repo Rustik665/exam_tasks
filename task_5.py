@@ -11,7 +11,7 @@ import uuid
 from abc import ABC, abstractmethod
 import concurrent.futures
 from enum import Enum
-from typing import Optional
+from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -95,18 +95,38 @@ async def get_application_status2(identifier: str) -> Response:
     return _get_application_status(ApplicationTwo(identifier))
 
 
+async def _get_status_with_timeout(
+        app_1_id: Optional[str] = None, app_2_id: Optional[str] = None
+) -> Tuple[List[Response], bool]:
+    """ Возврат результатов с флагом "был таймаут" """
+    try:
+        if app_1_id and app_2_id:
+            result_app1, result_app2 = await asyncio.wait_for(asyncio.gather(
+                get_application_status1(app_1_id),
+                get_application_status2(app_2_id),
+            ), TIMEOUT_SECONDS)
+            return [result_app1, result_app2], False
+        elif app_1_id:
+            result_app1 = await asyncio.wait_for(asyncio.gather([
+                get_application_status1(app_1_id),
+            ]), TIMEOUT_SECONDS)
+            return [result_app1], False
+        else:
+            result_app2 = await asyncio.wait_for(asyncio.gather([
+                get_application_status2(app_2_id),
+            ]), TIMEOUT_SECONDS)
+            return [result_app2], False
+    except asyncio.TimeoutError:
+        return [Response.Failure, Response.Failure], True
+
+
 async def perform_operation(identifier: str) -> ApplicationResponse:
     # Делать запросы с указанным таймаутом одновременно (АСИНХРОННО) в 2 разных сервиса
 
     retries_count = 0
     last_request_time = datetime.now()
-    try:
-        result_app1, result_app2 = await asyncio.wait_for(asyncio.gather(
-                get_application_status1(f'{identifier}_1'),
-                get_application_status2(f'{identifier}_1'),
-            ), TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        result_app1 = result_app2 = Response.Failure
+    results, timeout_expired = await _get_status_with_timeout(app_1_id=f'identifier_1', app_2_id=f'identifier_2')
+    result_app1, result_app2 = results[0], results[0]
 
     while (result_app1 == Response.RetryAfter or result_app2 == Response.RetryAfter) \
             and retries_count < MAX_FAILURES_COUNT:
@@ -114,15 +134,22 @@ async def perform_operation(identifier: str) -> ApplicationResponse:
         await asyncio.sleep(TIMEOUT_SECONDS)
         last_request_time = datetime.now()
 
-        if result_app2 == Response.RetryAfter:
-            result_app2 = await asyncio.gather(get_application_status2(f'{identifier}_1'))
+        if result_app1 == Response.RetryAfter and result_app2 == Response.RetryAfter:
+            results, timeout_expired = await _get_status_with_timeout(app_1_id=f'identifier_1', app_2_id=f'identifier_2')
+            result_app1, result_app2 = results[0], results[0]
 
         if result_app1 == Response.RetryAfter:
-            result_app1 = await asyncio.gather(get_application_status2(f'{identifier}_1'))
+            results, timeout_expired = await _get_status_with_timeout(app_1_id=f'identifier_1')
+            result_app1 = results[0]
+
+        if result_app2 == Response.RetryAfter:
+            results, timeout_expired = await _get_status_with_timeout(app_2_id=f'identifier_2')
+            result_app2 = results[0]
 
     both_apps_succeeded = result_app1 == result_app2 == Response.Success
     result_status = ApplicationStatusResponse.Success if both_apps_succeeded else ApplicationStatusResponse.Failure
     result_description = str(result_status)
+
     return ApplicationResponse(
         identifier,
         result_status,
